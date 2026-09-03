@@ -1,0 +1,34 @@
+# Ce qui ne part JAMAIS sur le serveur (rsync --exclude-from).
+#
+# ⚠️ rsync ne SUPPRIME pas les fichiers exclus déjà présents côté serveur : un
+# `src/` hérité d'un ancien téléversement FTP y survivra sans être mis à jour.
+# Pour le nettoyer, c'est une suppression manuelle, une fois.
+#
+# Règle de tri : tout ce qui est ENTRÉE du build reste ici. Tout ce qui aide à
+# diagnostiquer en ligne (docs/, tools/) part — ça ne pèse rien et ça vaut cher
+# le jour où il faut comprendre quelque chose sur le serveur.
+
+# ── Contrôle de version ─────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.editorconfig
+
+# ── Entrées du build : le serveur ne reçoit que le compilé ──────────────────
+# `src/` n'a rien à faire en production. Si un helper PHP se met à le lire au
+# rendu, c'est un bug — pas une raison de le déployer.
+src
+node_modules
+package.json
+package-lock.json
+vite.config.js
+webpack.mix.js
+tailwind.config.js
+postcss.config.js
+.npmrc
+
+# ── Débris ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+.rendu-*.png

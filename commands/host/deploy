@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+
+## #ddev-generated: retire cette ligne si tu veux éditer et posséder ce fichier
+## (mais alors `ddev add-on update` ne le mettra plus à jour).
+## Description: Déploie le thème WordPress vers un environnement distant
+## Usage: deploy <environnement> [--dry-run] [--no-build] [--yes]
+## Example: "ddev deploy preprod" | "ddev deploy prod --dry-run"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DÉPLOIEMENT DU THÈME — rsync sur SSH, depuis le poste du dev
+#
+# Principe : le script est le produit, pas la CI. Il tourne sur la machine du
+# dev, avec SA clé SSH. Il n'y a donc AUCUN secret dans le dépôt, et aucune
+# configuration à poser dans une interface que personne ne maintient.
+#
+# Ce qu'il ne touche pas : la base de données, wp-content/uploads, les plugins.
+# Le transfert est circonscrit à wp-content/themes/<thème>/. Les données et les
+# médias restent le domaine de WP Migrate.
+#
+# ⚠️ ORDRE À RESPECTER : le THÈME d'abord, les DONNÉES ensuite. Les définitions
+# de champs ACF vivent dans `acf-json/` du thème et ne sont PAS en base : une
+# base poussée avant le thème référence des clés de champs que le serveur ne
+# connaît pas encore, et ACF rend alors les valeurs brutes — pages vides,
+# écrans d'édition sans champs, et parfois erreur 500.
+# ═══════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+APPROOT="${DDEV_APPROOT:-$PWD}"
+CONF="$APPROOT/.ddev/deploy/targets.conf"
+EXCLUDES="$APPROOT/.ddev/deploy/exclude.txt"
+
+# --- Sortie -----------------------------------------------------------------
+
+if [ -t 1 ]; then
+	GRAS=$'\033[1m'; ROUGE=$'\033[31m'; VERT=$'\033[32m'; JAUNE=$'\033[33m'; GRIS=$'\033[90m'; RAZ=$'\033[0m'
+else
+	GRAS=''; ROUGE=''; VERT=''; JAUNE=''; GRIS=''; RAZ=''
+fi
+
+titre() { printf '\n%s%s%s\n' "$GRAS" "$1" "$RAZ"; }
+info()  { printf '  %s\n' "$1"; }
+faible(){ printf '  %s%s%s\n' "$GRIS" "$1" "$RAZ"; }
+ok()    { printf '  %s✓%s %s\n' "$VERT" "$RAZ" "$1"; }
+alerte(){ printf '  %s!%s %s\n' "$JAUNE" "$RAZ" "$1"; }
+mourir(){ printf '\n  %s✗ %s%s\n\n' "$ROUGE" "$1" "$RAZ" >&2; exit 1; }
+
+# --- Arguments --------------------------------------------------------------
+
+ENV_CIBLE=''
+DRY=0
+BUILD=1
+OUI=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--dry-run|-n) DRY=1 ;;
+		--no-build)   BUILD=0 ;;
+		--yes|-y)     OUI=1 ;;
+		-h|--help)
+			sed -n '/^## Usage/,/^## Example/p' "$0" | sed 's/^## //'
+			exit 0 ;;
+		-*) mourir "Option inconnue : $1" ;;
+		*)  [ -z "$ENV_CIBLE" ] || mourir "Un seul environnement à la fois (reçu « $ENV_CIBLE » puis « $1 »)."
+		    ENV_CIBLE="$1" ;;
+	esac
+	shift
+done
+
+# --- Lecture de la configuration -------------------------------------------
+
+# Format volontairement en ini et non en YAML : `yq` n'est pas installé
+# d'office sur un Mac, et une dépendance de plus est une dépendance qu'un dev
+# n'aura pas. Dix lignes d'awk suffisent et ne cassent jamais.
+conf_lire() {
+	local section="$1" cle="$2"
+
+	awk -v s="$section" -v k="$cle" '
+		/^[ \t]*\[/ {
+			sec = $0
+			sub(/^[ \t]*\[/, "", sec); sub(/\].*$/, "", sec)
+			gsub(/[ \t]/, "", sec)
+			next
+		}
+		{
+			ligne = $0
+			sub(/[#;].*$/, "", ligne)
+			if (ligne !~ /=/) next
+
+			cle = ligne; sub(/=.*$/, "", cle); gsub(/[ \t]/, "", cle)
+			val = ligne; sub(/^[^=]*=[ \t]*/, "", val); sub(/[ \t]+$/, "", val)
+
+			if (cle == k && sec == s) { print val; exit }
+		}
+	' "$CONF"
+}
+
+conf_sections() {
+	awk '/^[ \t]*\[/ { s=$0; sub(/^[ \t]*\[/,"",s); sub(/\].*$/,"",s); gsub(/[ \t]/,"",s); print s }' "$CONF"
+}
+
+# --- Assistant de première configuration -----------------------------------
+#
+# C'est le cœur du dispositif anti-oubli : il n'y a pas de fichier d'exemple à
+# recopier, la commande demande ce qui lui manque et écrit le fichier. Un dev
+# qui lance `ddev deploy preprod` sur un projet neuf est guidé, il n'a rien à
+# lire ailleurs.
+assistant() {
+	local env="$1" theme_defaut hote utilisateur port chemin url branche
+
+	titre "Première configuration de « $env »"
+	info "Aucune entrée pour cet environnement dans .ddev/deploy/targets.conf."
+	info "Je la crée maintenant. Rien de secret n'y sera écrit : l'authentification"
+	info "passe par ta clé SSH."
+	printf '\n'
+
+	if [ ! -t 0 ]; then
+		mourir "Configuration absente et pas de terminal interactif. Lance « ddev deploy $env » à la main une première fois."
+	fi
+
+	theme_defaut="$(basename "$(ls -d "$APPROOT"/wp-content/themes/*/ 2>/dev/null | head -1)" 2>/dev/null || true)"
+
+	if [ ! -f "$CONF" ]; then
+		read -r -p "  Nom du dossier du thème [${theme_defaut}] : " theme
+		theme="${theme:-$theme_defaut}"
+		[ -n "$theme" ] || mourir "Le nom du thème est obligatoire."
+		mkdir -p "$(dirname "$CONF")"
+		{
+			echo "# Cibles de déploiement — géré par « ddev deploy »."
+			echo "#"
+			echo "# ⚠️ CE FICHIER EST VERSIONNÉ ET NE CONTIENT AUCUN SECRET."
+			echo "# L'authentification se fait par la clé SSH du dev. Si tu es tenté d'y"
+			echo "# écrire un mot de passe, c'est qu'il manque une clé sur le serveur."
+			echo ""
+			echo "theme = $theme"
+		} > "$CONF"
+	fi
+
+	read -r -p "  Hôte SSH                                  : " hote
+	read -r -p "  Utilisateur SSH                           : " utilisateur
+	read -r -p "  Port SSH [22]                             : " port
+	read -r -p "  Chemin de la RACINE du site (avec wp-content/) : " chemin
+	read -r -p "  URL publique (pour le contrôle final)     : " url
+	read -r -p "  Branche git attendue [main]               : " branche
+
+	[ -n "$hote" ] && [ -n "$utilisateur" ] && [ -n "$chemin" ] \
+		|| mourir "Hôte, utilisateur et chemin sont obligatoires."
+
+	{
+		echo ""
+		echo "[$env]"
+		echo "host   = $hote"
+		echo "user   = $utilisateur"
+		echo "port   = ${port:-22}"
+		echo "path   = ${chemin%/}"
+		echo "url    = $url"
+		echo "branch = ${branche:-main}"
+	} >> "$CONF"
+
+	printf '\n'
+	ok "Écrit dans .ddev/deploy/targets.conf — à commiter, il servira à toute l'équipe."
+}
+
+# --- Choix de l'environnement ----------------------------------------------
+
+if [ -z "$ENV_CIBLE" ]; then
+	titre "Quel environnement ?"
+	if [ -f "$CONF" ]; then
+		conf_sections | sed 's/^/  ddev deploy /'
+	else
+		info "Aucun environnement configuré. « ddev deploy preprod » créera le premier."
+	fi
+	printf '\n'
+	# Sortie 0 et non 1 : aucune action n'a été demandée, on a rendu de
+	# l'information. Un code non nul ferait afficher à ddev un « Failed to run
+	# deploy » rouge sur une interaction parfaitement normale.
+	exit 0
+fi
+
+if [ ! -f "$CONF" ] || ! conf_sections | grep -qx "$ENV_CIBLE"; then
+	assistant "$ENV_CIBLE"
+fi
+
+THEME="$(conf_lire '' theme)"
+HOTE="$(conf_lire "$ENV_CIBLE" host)"
+USER_SSH="$(conf_lire "$ENV_CIBLE" user)"
+PORT="$(conf_lire "$ENV_CIBLE" port)"
+CHEMIN="$(conf_lire "$ENV_CIBLE" path)"
+URL="$(conf_lire "$ENV_CIBLE" url)"
+BRANCHE="$(conf_lire "$ENV_CIBLE" branch)"
+
+PORT="${PORT:-22}"
+[ -n "$THEME" ]    || mourir "Clé « theme » absente de .ddev/deploy/targets.conf."
+[ -n "$HOTE" ]     || mourir "Clé « host » absente pour [$ENV_CIBLE]."
+[ -n "$USER_SSH" ] || mourir "Clé « user » absente pour [$ENV_CIBLE]."
+[ -n "$CHEMIN" ]   || mourir "Clé « path » absente pour [$ENV_CIBLE]."
+
+THEME_LOCAL="$APPROOT/wp-content/themes/$THEME"
+THEME_DISTANT="$CHEMIN/wp-content/themes/$THEME"
+
+[ -d "$THEME_LOCAL" ] || mourir "Thème introuvable en local : $THEME_LOCAL"
+
+titre "Déploiement vers « $ENV_CIBLE »"
+info "thème   : $THEME"
+info "source  : ${THEME_LOCAL#$APPROOT/}"
+info "cible   : $USER_SSH@$HOTE:$THEME_DISTANT"
+[ "$DRY" = 1 ] && alerte "SIMULATION — aucun fichier ne sera transféré"
+
+# --- 1 · Garde-fous git -----------------------------------------------------
+
+titre "1 · État du dépôt"
+
+if git -C "$APPROOT" rev-parse --git-dir >/dev/null 2>&1; then
+	branche_actuelle="$(git -C "$APPROOT" rev-parse --abbrev-ref HEAD)"
+
+	if [ -n "$(git -C "$APPROOT" status --porcelain -- "$THEME_LOCAL")" ]; then
+		alerte "Le thème a des modifications non commitées : tu déploierais du code qui n'est nulle part."
+		git -C "$APPROOT" status --short -- "$THEME_LOCAL" | sed 's/^/      /'
+	else
+		ok "Arbre propre sur le thème"
+	fi
+
+	if [ -n "$BRANCHE" ] && [ "$branche_actuelle" != "$BRANCHE" ]; then
+		alerte "Branche « $branche_actuelle », alors que $ENV_CIBLE attend « $BRANCHE »."
+	else
+		ok "Branche $branche_actuelle"
+	fi
+
+	faible "commit : $(git -C "$APPROOT" log -1 --format='%h %s' 2>/dev/null | cut -c1-70)"
+else
+	alerte "Pas un dépôt git — aucun contrôle de version possible."
+fi
+
+# --- 2 · Build --------------------------------------------------------------
+
+titre "2 · Construction des assets"
+
+if [ "$BUILD" = 0 ]; then
+	alerte "Build sauté (--no-build) — dist/ part tel qu'il est sur le disque."
+elif [ ! -f "$THEME_LOCAL/package.json" ]; then
+	faible "Pas de package.json dans le thème, rien à construire."
+else
+	# ⚠️ Toujours via ddev : le node du conteneur est celui qui a produit le
+	# node_modules du projet, et une version de Node différente peut résoudre
+	# d'autres dépendances.
+	# Sortie capturée et montrée SEULEMENT en cas d'échec : npm écrit ses
+	# « notice » sur stderr, et un avis de mise à jour de npm au milieu d'un
+	# déploiement n'apporte rien. Une vraie erreur, si.
+	journal_build="$(mktemp)"
+
+	if [ ! -d "$THEME_LOCAL/node_modules" ]; then
+		info "node_modules absent → npm ci"
+		if ! ( cd "$THEME_LOCAL" && ddev npm ci ) >"$journal_build" 2>&1; then
+			cat "$journal_build" >&2
+			rm -f "$journal_build"
+			mourir "npm ci a échoué."
+		fi
+	fi
+
+	info "npm run prod"
+	if ! ( cd "$THEME_LOCAL" && ddev npm run prod ) >"$journal_build" 2>&1; then
+		cat "$journal_build" >&2
+		rm -f "$journal_build"
+		mourir "Le build a échoué — rien n'a été déployé."
+	fi
+
+	rm -f "$journal_build"
+	ok "Assets construits"
+fi
+
+# --- 3 · Contrôle de ce qui va partir ---------------------------------------
+#
+# Ces trois contrôles ne sont pas décoratifs : ils correspondent chacun à une
+# panne réelle en préproduction, et chacune était SILENCIEUSE. Mieux vaut
+# échouer ici que livrer un site qui se vide sans un message.
+
+titre "3 · Contrôle du contenu à déployer"
+
+manque=0
+
+# a) Le manifeste Vite. Sans lui, ni CSS ni JS ne sont chargés.
+if [ -f "$THEME_LOCAL/vite.config.js" ] || [ -f "$THEME_LOCAL/webpack.mix.js" ]; then
+	if [ -f "$THEME_LOCAL/dist/.vite/manifest.json" ] || [ -f "$THEME_LOCAL/mix-manifest.json" ]; then
+		ok "Manifeste des assets présent"
+	else
+		alerte "MANIFESTE ABSENT — le thème n'aura ni CSS ni JavaScript."
+		manque=1
+	fi
+fi
+
+# b) Les définitions de champs ACF. Ni des assets (donc pas dans dist/), ni en
+#    base (donc pas transportées par WP Migrate) : c'est le dossier qui tombe
+#    dans tous les angles morts, et le seul dont l'absence casse TOUT.
+#
+#    ⚠️ Le test est piloté par GIT et non par le disque. Se contenter de
+#    « si le dossier existe, le vérifier » ne dit rien du cas le plus grave :
+#    un dossier suivi par git qui a disparu de la copie de travail.
+acf_suivi=0
+if git -C "$APPROOT" rev-parse --git-dir >/dev/null 2>&1; then
+	[ -n "$(git -C "$APPROOT" ls-files -- "$THEME_LOCAL/acf-json" 2>/dev/null)" ] && acf_suivi=1
+fi
+
+if [ -d "$THEME_LOCAL/acf-json" ]; then
+	nb_json="$(find "$THEME_LOCAL/acf-json" -name '*.json' | wc -l | tr -d ' ')"
+	if [ "$nb_json" -gt 0 ]; then
+		ok "$nb_json groupe(s) de champs ACF"
+	else
+		alerte "acf-json/ est VIDE — aucun champ ne se résoudra, les pages s'afficheront vides."
+		manque=1
+	fi
+elif [ "$acf_suivi" = 1 ]; then
+	alerte "acf-json/ est suivi par git mais ABSENT du disque — le déploiement effacerait les définitions de champs du serveur."
+	manque=1
+fi
+
+# c) Les images et icônes construites. Un helper qui insère un SVG en ligne lit
+#    le fichier sur le disque : sans dist/images, il rend une chaîne vide.
+if [ -d "$THEME_LOCAL/src/images" ]; then
+	if [ -d "$THEME_LOCAL/dist/images" ]; then
+		ok "Images et icônes construites"
+	else
+		alerte "dist/images ABSENT alors que src/images existe — icônes SVG et images muettes."
+		manque=1
+	fi
+fi
+
+if [ "$manque" = 1 ]; then
+	printf '\n'
+	if [ "$OUI" = 0 ] && [ -t 0 ]; then
+		read -r -p "  Déployer quand même ? [non] : " forcer
+		case "${forcer:-non}" in oui|o|y|yes) ;; *) mourir "Déploiement annulé." ;; esac
+	elif [ "$OUI" = 0 ]; then
+		mourir "Contrôles en échec. Relance avec --yes si c'est volontaire."
+	fi
+fi
+
+# --- 4 · Connexion SSH ------------------------------------------------------
+#
+# Échouer ici, sur un message clair, plutôt que dans un rsync à moitié
+# commencé. BatchMode interdit le repli sur le mot de passe : sans lui, ssh
+# part en saisie interactive et noie la vraie cause.
+
+titre "4 · Connexion au serveur"
+
+if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -p "$PORT" "$USER_SSH@$HOTE" true 2>/dev/null; then
+	printf '\n'
+	info "La connexion SSH a échoué. Dans l'ordre des causes probables :"
+	info "  1. ta clé publique n'est pas dans le ~/.ssh/authorized_keys du serveur ;"
+	info "  2. l'hôte, l'utilisateur ou le port de targets.conf sont faux ;"
+	info "  3. l'hôte n'est pas encore dans ton ~/.ssh/known_hosts — connecte-toi"
+	info "     une fois à la main pour l'accepter :"
+	printf '\n      ssh -p %s %s@%s\n' "$PORT" "$USER_SSH" "$HOTE"
+	mourir "Connexion refusée."
+fi
+
+ok "Connecté en tant que $(ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" 'whoami' 2>/dev/null)"
+
+if ! ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" "[ -d '$CHEMIN/wp-content' ]" 2>/dev/null; then
+	mourir "$CHEMIN/wp-content est introuvable sur le serveur. Le chemin « path » de targets.conf désigne-t-il bien la RACINE du site ?"
+fi
+
+ok "Racine WordPress trouvée"
+
+# --- 5 · Confirmation en production ----------------------------------------
+
+if [ "$ENV_CIBLE" = "prod" ] && [ "$DRY" = 0 ] && [ "$OUI" = 0 ]; then
+	titre "5 · Confirmation"
+	alerte "Cible de PRODUCTION."
+	if [ -t 0 ]; then
+		read -r -p "  Tape « prod » pour confirmer : " confirmation
+		[ "$confirmation" = "prod" ] || mourir "Déploiement annulé."
+	else
+		mourir "Déploiement en production refusé hors terminal interactif (utilise --yes en connaissance de cause)."
+	fi
+fi
+
+# --- 6 · Transfert ----------------------------------------------------------
+#
+# `--delete` est circonscrit au dossier du thème : ni les uploads, ni les
+# plugins, ni la base ne sont dans le périmètre. Et rsync ne supprime jamais
+# les fichiers EXCLUS sur le serveur — un `src/` déjà présent là-bas survit
+# sans être mis à jour.
+#
+# Options choisies pour être comprises par l'openrsync livré avec macOS
+# (protocole 29) autant que par le rsync GNU : pas de `--filter`, pas de
+# `--info`, `-n` plutôt que `--dry-run`.
+
+titre "6 · Transfert"
+
+args_rsync=(-a -z --delete --itemize-changes)
+[ "$DRY" = 1 ] && args_rsync+=(-n)
+[ -f "$EXCLUDES" ] && args_rsync+=(--exclude-from="$EXCLUDES")
+
+sortie_rsync="$(mktemp)"
+trap 'rm -f "$sortie_rsync"' EXIT
+
+if ! rsync "${args_rsync[@]}" \
+	-e "ssh -o BatchMode=yes -p $PORT" \
+	"$THEME_LOCAL/" "$USER_SSH@$HOTE:$THEME_DISTANT/" | tee "$sortie_rsync"; then
+	mourir "Le transfert a échoué."
+fi
+
+nb_envoyes="$(grep -c '^[<>]' "$sortie_rsync" || true)"
+nb_supprimes="$(grep -c '^\*deleting' "$sortie_rsync" || true)"
+
+ok "$nb_envoyes fichier(s) transféré(s), $nb_supprimes supprimé(s) côté serveur"
+
+if [ "$DRY" = 1 ]; then
+	printf '\n  %sSimulation terminée — rien n'\''a été modifié.%s\n\n' "$JAUNE" "$RAZ"
+	exit 0
+fi
+
+# --- 7 · Vérification -------------------------------------------------------
+
+titre "7 · Vérification"
+
+if [ -n "$URL" ]; then
+	code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$URL" || echo '000')"
+	case "$code" in
+		200) ok "$URL répond 200" ;;
+		000) alerte "$URL injoignable (réseau, ou site derrière une authentification)." ;;
+		*)   alerte "$URL répond $code — à regarder tout de suite." ;;
+	esac
+fi
+
+# Diagnostic ACF à distance, si le thème l'embarque et si wp-cli est là.
+# Best effort : beaucoup d'hébergements mutualisés n'ont pas wp.
+if [ -f "$THEME_LOCAL/tools/diag-acf.php" ]; then
+	if ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" "command -v wp >/dev/null 2>&1"; then
+		info "diag-acf.php à distance :"
+		ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
+			"cd '$CHEMIN' && wp eval-file 'wp-content/themes/$THEME/tools/diag-acf.php' 2>&1 | tail -4" \
+			| sed 's/^/      /' || alerte "Le diagnostic n'a pas pu tourner."
+	else
+		faible "wp-cli absent du serveur — diagnostic à lancer depuis le back-office."
+	fi
+fi
+
+printf '\n  %s%s déployé sur %s%s\n' "$VERT$GRAS" "$THEME" "$ENV_CIBLE" "$RAZ"
+printf '  %sPense aux données : le thème est parti, WP Migrate ensuite si besoin.%s\n\n' "$GRIS" "$RAZ"
