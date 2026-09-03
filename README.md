@@ -4,9 +4,13 @@ Déploiement du **thème** d'un projet WordPress vers un environnement distant,
 par `rsync` sur SSH, depuis le poste du dev.
 
 ```bash
-ddev deploy preprod
-ddev deploy prod --dry-run
+ddev deploy                    # liste les environnements configurés
+ddev deploy preprod            # construit, contrôle, transfère, vérifie
+ddev deploy prod --dry-run     # montre ce qui partirait, n'envoie rien
 ```
+
+Outil interne Propulse. *(Si ce dépôt devient public un jour, il lui faudra une
+licence — la question n'est pas tranchée.)*
 
 ## Le principe
 
@@ -45,6 +49,14 @@ ddev add-on get Team-Propulse/ddev-wp-deploy
 git add .ddev && git commit -m "chore: ddev deploy"
 ```
 
+`ddev add-on get <org>/<dépôt>` installe **la dernière release** du dépôt. Pour
+épingler une version, ou travailler sur la branche par défaut :
+
+```bash
+ddev add-on get Team-Propulse/ddev-wp-deploy --version v1.0.0
+ddev add-on get Team-Propulse/ddev-wp-deploy --default-branch
+```
+
 Puis, la première fois :
 
 ```bash
@@ -53,13 +65,23 @@ ddev deploy preprod
 
 La commande **crée `.ddev/deploy/targets.conf` en te posant les questions**. Il
 n'y a pas de fichier d'exemple à recopier — c'est délibéré : une configuration
-qu'il faut aller chercher est une configuration qu'on oublie.
+qu'il faut aller chercher est une configuration qu'on oublie. Hors terminal
+interactif, elle refuse et te dit de la lancer à la main une première fois.
 
 Pour propager les corrections à tout le parc :
 
 ```bash
 ddev add-on update
 ```
+
+Pour retirer l'add-on d'un projet :
+
+```bash
+ddev add-on remove wp-deploy
+```
+
+`targets.conf` et `exclude.local.txt` **survivent** à une désinstallation :
+l'add-on ne possède que `commands/host/deploy` et `deploy/exclude.txt`.
 
 ## La configuration
 
@@ -84,12 +106,46 @@ url    = https://exemple.fr
 branch = main
 ```
 
-`path` désigne la **racine du site**, celle qui contient `wp-content/` — pas le
-dossier du thème. Le script en déduit la cible et sait où lancer `wp`.
+| Clé | Portée | Rôle |
+|---|---|---|
+| `theme` | globale | Nom du dossier dans `wp-content/themes/` |
+| `host` | par env | Hôte SSH — **obligatoire** |
+| `user` | par env | Utilisateur SSH — **obligatoire** |
+| `path` | par env | **Racine du site**, celle qui contient `wp-content/` — **obligatoire** |
+| `port` | par env | Port SSH, `22` par défaut |
+| `url` | par env | URL publique, pour le contrôle final. Sans elle, pas de vérification HTTP |
+| `branch` | par env | Branche git attendue. Une autre branche déclenche un avertissement, pas un refus |
+
+Le nom de la section (`[preprod]`, `[prod]`, `[recette]`…) est libre : c'est
+l'argument de `ddev deploy`. Seul `prod` a un traitement particulier — il
+demande de taper `prod` pour confirmer.
 
 > Si tu es tenté d'écrire un mot de passe dans ce fichier, c'est qu'il manque
 > une clé publique sur le serveur. Le script n'accepte pas de mot de passe :
 > `BatchMode=yes` interdit tout repli interactif, exprès.
+
+## Ce qui ne part pas
+
+Deux listes d'exclusions, et la séparation est volontaire :
+
+| Fichier | Appartient à | Mis à jour par `ddev add-on update` |
+|---|---|---|
+| `.ddev/deploy/exclude.txt` | l'add-on | **oui** |
+| `.ddev/deploy/exclude.local.txt` | le projet | **jamais** |
+
+La liste commune écarte les **entrées du build** (`src/`, `node_modules/`,
+`package.json`, la config Vite/Tailwind/PostCSS), le contrôle de version et les
+débris. Ce qui aide à diagnostiquer en ligne — `docs/`, `tools/` — part : ça ne
+pèse rien et ça vaut cher le jour où il faut comprendre quelque chose sur le
+serveur.
+
+Pour une exclusion propre à un projet, créer `exclude.local.txt` : la commande
+passe **les deux** listes à rsync. C'est ce qui permet aux corrections de la
+liste commune de se propager sans écraser les réglages d'un projet.
+
+> ⚠️ rsync ne **supprime** pas les fichiers exclus déjà présents sur le
+> serveur : un `src/` hérité d'un ancien téléversement FTP y survivra sans être
+> mis à jour. Le nettoyer est une suppression manuelle, une fois.
 
 ## Ce que fait la commande
 
@@ -98,9 +154,9 @@ dossier du thème. Le script en déduit la cible et sait où lancer `wp`.
 | **1 · Dépôt** | Arbre propre sur le thème, branche attendue, commit affiché |
 | **2 · Build** | `ddev npm run prod` (et `npm ci` si `node_modules` manque) — jamais un `dist/` périmé |
 | **3 · Contrôle** | Manifeste des assets, `acf-json/`, `dist/images` — voir plus bas |
-| **4 · SSH** | Connexion testée avant le transfert, avec les causes probables en cas d'échec |
+| **4 · SSH** | Connexion testée, et présence de `wp-content/` à la racine indiquée |
 | **5 · Confirmation** | En prod, il faut taper `prod` |
-| **6 · Transfert** | `rsync -az --delete`, droits imposés à 755/644, exclusions de `deploy/exclude.txt` |
+| **6 · Transfert** | `rsync -az --delete`, puis normalisation des droits sur le serveur |
 | **7 · Vérification** | HTTP sur l'URL publique **et sur chaque asset du thème**, puis `tools/diag-acf.php` à distance si `wp` est là |
 
 ### Les trois contrôles de l'étape 3
@@ -113,17 +169,20 @@ site qui se vide.
   ni JavaScript ne sont chargés.
 - **`acf-json/`** — ni un asset (donc pas dans `dist/`), ni en base (donc pas
   transporté par WP Migrate). C'est le dossier qui tombe dans tous les angles
-  morts, et le seul dont l'absence casse *tout*.
+  morts, et le seul dont l'absence casse *tout*. Le contrôle est piloté par
+  **git** et non par le disque : un dossier suivi mais absent de la copie de
+  travail est le cas le plus grave — `--delete` effacerait les définitions du
+  serveur — et c'est celui qu'un test « si le dossier existe » ne voit pas.
 - **`dist/images`** — un helper qui insère un SVG en ligne lit le fichier sur
   le disque. Sans le dossier construit, il rend une chaîne vide, sans rien dire.
 
-Un contrôle en échec demande une confirmation explicite ; hors terminal, il
-arrête le déploiement.
+Un contrôle en échec demande une confirmation explicite ; hors terminal, ou
+avec `--yes`, il arrête le déploiement plutôt que de deviner.
 
 ### Les droits sont normalisés sur le serveur
 
-Après le transfert, une passe explicite : **755 pour les dossiers, 644 pour les
-fichiers**, sur le dossier du thème.
+Après le transfert, une passe explicite sur le dossier du thème : **755 pour
+les dossiers, 644 pour les fichiers**.
 
 Ce n'est pas de la coquetterie. Sur macOS, DDEV synchronise par mutagen, qui
 écrit sur l'hôte en `600`/`700` tout ce que le conteneur a produit — donc les
@@ -138,7 +197,7 @@ entièrement dépouillée.**
 > c'est la passe côté serveur qui garantit le résultat.
 
 Cette passe **répare** aussi un serveur déjà dans cet état, ce qu'un simple
-transfert ne fait pas.
+transfert ne fait pas. Elle est sautée en `--dry-run`.
 
 ### La vérification porte sur les assets, pas seulement sur la page
 
@@ -147,18 +206,13 @@ liste à maintenir, ni supposition sur le nom des fichiers hachés — et vérif
 chacune. Une page en 200 dont le CSS répond 403 est indiscernable d'un
 déploiement réussi si on s'arrête au code de la page.
 
-En cas de 403 persistant, la sonde qui tranche est un **fichier inexistant** :
-404 signifie que le dossier est traversable et que le problème est le fichier ;
-403 signifie que le dossier lui-même n'a pas le bit d'exécution, et que rien de
-ce qu'il contient n'est accessible.
-
 ## Options
 
 | | |
 |---|---|
-| `--dry-run`, `-n` | Montre ce qui partirait, ne transfère rien |
+| `--dry-run`, `-n` | Montre ce qui partirait, ne transfère rien et ne touche pas aux droits |
 | `--no-build` | Déploie `dist/` tel qu'il est sur le disque |
-| `--yes`, `-y` | Passe les confirmations (pour un usage scripté) |
+| `--yes`, `-y` | Pas de question. Un contrôle en échec **arrête** le déploiement au lieu de demander |
 
 ## Prérequis
 
@@ -168,6 +222,30 @@ ce qu'il contient n'est accessible.
   volontairement comprises par l'`openrsync` d'Apple (protocole 29) autant que
   par le `rsync` GNU : pas de `--filter`, pas de `--info`, `-n` plutôt que
   `--dry-run`. **Aucun `brew install` à demander.**
+
+## Quand ça coince
+
+| Symptôme | Cause la plus probable |
+|---|---|
+| `unknown command "deploy"` | Pas lancé depuis un projet DDEV, ou add-on installé ailleurs. `ddev add-on list --installed` |
+| Connexion SSH refusée | Clé publique absente du serveur, ou hôte pas encore dans `~/.ssh/known_hosts`. Le script affiche la commande `ssh` à lancer une fois à la main |
+| `wp-content est introuvable` | `path` désigne le dossier du thème au lieu de la **racine du site** |
+| **403 sur un asset** | Droits sur le serveur. Un déploiement les normalise ; s'il en reste, c'est un dossier **parent** non traversable |
+| Un asset en 404 | `dist/` périmé sur le serveur, ou déployé avec `--no-build` |
+| `not using a post-quantum key exchange` | Avertissement d'OpenSSH sur l'**ancienneté du SSH du serveur**. Rien à voir avec le script, et volontairement non masqué |
+
+### La sonde qui localise un 403
+
+Un fichier **inexistant** distingue les deux causes en une requête :
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://…/dist/assets/inexistant-xyz.txt
+```
+
+| Réponse | Diagnostic |
+|---|---|
+| **404** | le dossier est lisible et traversable — le problème est le fichier |
+| **403** | le dossier lui-même n'a pas le bit d'exécution, et rien de ce qu'il contient n'est accessible |
 
 ## Ce qu'il ne fait pas, et pourquoi
 
@@ -180,3 +258,8 @@ ce qu'il contient n'est accessible.
   lieu, et reste vrai.
 - **Pas de déploiement automatique au merge.** Le *moment* du déploiement est
   un geste humain.
+- **Pas de transport FTP.** Sans clé, il faudrait stocker un mot de passe ; et
+  sans SSH, ni normalisation des droits ni diagnostic à distance.
+- **Pas de déploiement des plugins.** Le périmètre est le thème. Un `--delete`
+  sur `wp-content/plugins` supprimerait tout plugin installé depuis l'admin et
+  non versionné — un piège sérieux en WordPress.
