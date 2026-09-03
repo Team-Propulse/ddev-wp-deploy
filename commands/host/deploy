@@ -130,9 +130,12 @@ assistant() {
 		{
 			echo "# Cibles de déploiement — géré par « ddev deploy »."
 			echo "#"
-			echo "# ⚠️ CE FICHIER EST VERSIONNÉ ET NE CONTIENT AUCUN SECRET."
-			echo "# L'authentification se fait par la clé SSH du dev. Si tu es tenté d'y"
-			echo "# écrire un mot de passe, c'est qu'il manque une clé sur le serveur."
+			echo "# ⚠️ CE FICHIER N'EST PAS VERSIONNÉ (voir .ddev/deploy/.gitignore) : il"
+			echo "# nomme des hôtes, des utilisateurs SSH et des chemins de serveurs."
+			echo "#"
+			echo "# Il ne contient AUCUN SECRET pour autant — l'authentification se fait"
+			echo "# par la clé SSH du dev. Si tu es tenté d'y écrire un mot de passe,"
+			echo "# c'est qu'il manque une clé publique sur le serveur."
 			echo ""
 			echo "theme = $theme"
 		} > "$CONF"
@@ -160,7 +163,7 @@ assistant() {
 	} >> "$CONF"
 
 	printf '\n'
-	ok "Écrit dans .ddev/deploy/targets.conf — à commiter, il servira à toute l'équipe."
+	ok "Écrit dans .ddev/deploy/targets.conf (non versionné, propre à ta machine)."
 }
 
 # --- Choix de l'environnement ----------------------------------------------

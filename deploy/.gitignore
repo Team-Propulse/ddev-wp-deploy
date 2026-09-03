@@ -1,0 +1,14 @@
+#ddev-generated: retire cette ligne si tu veux éditer et posséder ce fichier.
+#
+# `targets.conf` n'est PAS versionné : il nomme les hôtes, les utilisateurs SSH
+# et les chemins absolus des serveurs. Rien de secret au sens strict — la clé
+# SSH du dev est le seul facteur d'authentification — mais ce sont des
+# informations d'infrastructure qui n'ont pas à voyager avec le code.
+#
+# Conséquence assumée : chaque dev crée le fichier à son premier
+# `ddev deploy <env>`, guidé par l'assistant. C'est une question de trente
+# secondes, une fois par machine.
+#
+# `exclude.local.txt`, lui, RESTE versionné : c'est un réglage du projet, pas de
+# la machine, et toute l'équipe doit déployer avec les mêmes exclusions.
+targets.conf

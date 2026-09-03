@@ -81,11 +81,13 @@ ddev add-on remove wp-deploy
 ```
 
 `targets.conf` et `exclude.local.txt` **survivent** à une désinstallation :
-l'add-on ne possède que `commands/host/deploy` et `deploy/exclude.txt`.
+l'add-on ne possède que `commands/host/deploy`, `deploy/exclude.txt` et
+`deploy/.gitignore`.
 
 ## La configuration
 
-`.ddev/deploy/targets.conf`, **versionné**, sans aucun secret :
+`.ddev/deploy/targets.conf`, **non versionné** — l'add-on installe le
+`.gitignore` qui l'écarte :
 
 ```ini
 theme = mon-theme
@@ -124,14 +126,29 @@ demande de taper `prod` pour confirmer.
 > une clé publique sur le serveur. Le script n'accepte pas de mot de passe :
 > `BatchMode=yes` interdit tout repli interactif, exprès.
 
+### Pourquoi il n'est pas versionné
+
+Le fichier ne contient aucun secret — la clé SSH du dev est le seul facteur
+d'authentification — mais il nomme des **hôtes, des utilisateurs SSH et des
+chemins absolus de serveurs**. Ce sont des informations d'infrastructure, elles
+n'ont pas à voyager avec le code.
+
+**Conséquence assumée :** chaque dev crée le fichier à son premier
+`ddev deploy <env>`, guidé par l'assistant. Trente secondes, une fois par
+machine.
+
+`exclude.local.txt`, lui, **reste versionné** : c'est un réglage du projet et
+non de la machine, et toute l'équipe doit déployer avec les mêmes exclusions.
+
 ## Ce qui ne part pas
 
 Deux listes d'exclusions, et la séparation est volontaire :
 
-| Fichier | Appartient à | Mis à jour par `ddev add-on update` |
-|---|---|---|
-| `.ddev/deploy/exclude.txt` | l'add-on | **oui** |
-| `.ddev/deploy/exclude.local.txt` | le projet | **jamais** |
+| Fichier | Appartient à | Versionné | Mis à jour par `ddev add-on update` |
+|---|---|---|---|
+| `.ddev/deploy/exclude.txt` | l'add-on | oui | **oui** |
+| `.ddev/deploy/exclude.local.txt` | le projet | oui | **jamais** |
+| `.ddev/deploy/targets.conf` | la machine | **non** | jamais |
 
 La liste commune écarte les **entrées du build** (`src/`, `node_modules/`,
 `package.json`, la config Vite/Tailwind/PostCSS), le contrôle de version et les

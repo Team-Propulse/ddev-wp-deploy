@@ -11,6 +11,7 @@ ddev_version_constraint: '>= v1.24.0'
 project_files:
   - commands/host/deploy
   - deploy/exclude.txt
+  - deploy/.gitignore
 
 post_install_actions:
   - |
