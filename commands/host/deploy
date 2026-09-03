@@ -29,6 +29,8 @@ set -euo pipefail
 APPROOT="${DDEV_APPROOT:-$PWD}"
 CONF="$APPROOT/.ddev/deploy/targets.conf"
 EXCLUDES="$APPROOT/.ddev/deploy/exclude.txt"
+# Exclusions propres au projet, jamais touchées par `ddev add-on update`.
+EXCLUDES_LOCAL="$APPROOT/.ddev/deploy/exclude.local.txt"
 
 # --- Sortie -----------------------------------------------------------------
 
@@ -387,9 +389,20 @@ fi
 
 titre "6 · Transfert"
 
-args_rsync=(-a -z --delete --itemize-changes)
+# ⚠️ `--chmod` N'EST PAS UN LUXE. Sur macOS, DDEV synchronise par mutagen, qui
+# écrit sur l'hôte en 600/700 tout ce que le conteneur a produit : les assets
+# construits par Vite arrivent donc illisibles pour un serveur web. Transférés
+# tels quels, ils donnent un **403 sur le CSS et le JS** — page en 200,
+# entièrement dépouillée. Constaté en préproduction le 03/09/2026.
+#
+# On impose donc les droits à la cible plutôt que de copier ceux de la source :
+# 755 pour les dossiers, 644 pour les fichiers. rsync corrige aussi les droits
+# des fichiers déjà présents dont le contenu n'a pas changé, donc un
+# déploiement RÉPARE un serveur déjà dans cet état.
+args_rsync=(-a -z --delete --itemize-changes --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r)
 [ "$DRY" = 1 ] && args_rsync+=(-n)
 [ -f "$EXCLUDES" ] && args_rsync+=(--exclude-from="$EXCLUDES")
+[ -f "$EXCLUDES_LOCAL" ] && args_rsync+=(--exclude-from="$EXCLUDES_LOCAL")
 
 sortie_rsync="$(mktemp)"
 trap 'rm -f "$sortie_rsync"' EXIT
@@ -415,12 +428,47 @@ fi
 titre "7 · Vérification"
 
 if [ -n "$URL" ]; then
-	code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$URL" || echo '000')"
+	page="$(mktemp)"
+	code="$(curl -s -o "$page" -w '%{http_code}' --max-time 20 "$URL" || echo '000')"
+
 	case "$code" in
 		200) ok "$URL répond 200" ;;
 		000) alerte "$URL injoignable (réseau, ou site derrière une authentification)." ;;
 		*)   alerte "$URL répond $code — à regarder tout de suite." ;;
 	esac
+
+	# ⚠️ CONTRÔLER LES ASSETS, ET PAS SEULEMENT LA PAGE. Une page en 200 dont le
+	# CSS répond 403 est indiscernable d'un déploiement réussi si on s'arrête au
+	# code de la page — et c'est exactement ce qui est arrivé le 03/09/2026 :
+	# droits 600 sur les fichiers construits, site en ligne et dépouillé.
+	if [ "$code" = "200" ]; then
+		nb_ko=0
+		nb_ok=0
+
+		# Les URL du thème réellement référencées par la page rendue : ni liste
+		# à maintenir, ni supposition sur le nom des fichiers hachés.
+		for asset in $(grep -oE "https?://[^\"']+/wp-content/themes/$THEME/[^\"']+\.(css|js)" "$page" \
+			| sed 's/?.*$//' | sort -u | head -12); do
+			acode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$asset" || echo '000')"
+			if [ "$acode" = "200" ]; then
+				nb_ok=$((nb_ok + 1))
+			else
+				nb_ko=$((nb_ko + 1))
+				alerte "$acode sur ${asset##*/}"
+			fi
+		done
+
+		if [ "$nb_ko" -gt 0 ]; then
+			info "Un 403 sur un asset est presque toujours un problème de DROITS sur le"
+			info "serveur. Ce déploiement les a imposés (755/644) ; s'il en reste, c'est"
+			info "un dossier PARENT non traversable — sonde-le avec un fichier inexistant :"
+			info "  404 = dossier lisible · 403 = dossier sans droit d'exécution"
+		elif [ "$nb_ok" -gt 0 ]; then
+			ok "$nb_ok asset(s) du thème servis en 200"
+		fi
+	fi
+
+	rm -f "$page"
 fi
 
 # Diagnostic ACF à distance, si le thème l'embarque et si wp-cli est là.

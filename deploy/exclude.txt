@@ -1,4 +1,13 @@
+#ddev-generated: retire cette ligne pour posséder ce fichier — mais préfère
+# `exclude.local.txt`, qui n'est jamais touché par les mises à jour.
+#
 # Ce qui ne part JAMAIS sur le serveur (rsync --exclude-from).
+#
+# ⚠️ POUR LES EXCLUSIONS PROPRES À UN PROJET, créer
+# `.ddev/deploy/exclude.local.txt` : la commande le prend en compte EN PLUS de
+# ce fichier, et l'add-on n'y touche jamais. Cette séparation permet aux
+# corrections de la liste commune de se propager à tout le parc sans écraser
+# les réglages d'un projet.
 #
 # ⚠️ rsync ne SUPPRIME pas les fichiers exclus déjà présents côté serveur : un
 # `src/` hérité d'un ancien téléversement FTP y survivra sans être mis à jour.

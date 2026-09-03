@@ -100,8 +100,8 @@ dossier du thème. Le script en déduit la cible et sait où lancer `wp`.
 | **3 · Contrôle** | Manifeste des assets, `acf-json/`, `dist/images` — voir plus bas |
 | **4 · SSH** | Connexion testée avant le transfert, avec les causes probables en cas d'échec |
 | **5 · Confirmation** | En prod, il faut taper `prod` |
-| **6 · Transfert** | `rsync -az --delete`, exclusions de `deploy/exclude.txt` |
-| **7 · Vérification** | HTTP sur l'URL publique, et `tools/diag-acf.php` à distance si `wp` est là |
+| **6 · Transfert** | `rsync -az --delete`, droits imposés à 755/644, exclusions de `deploy/exclude.txt` |
+| **7 · Vérification** | HTTP sur l'URL publique **et sur chaque asset du thème**, puis `tools/diag-acf.php` à distance si `wp` est là |
 
 ### Les trois contrôles de l'étape 3
 
@@ -119,6 +119,32 @@ site qui se vide.
 
 Un contrôle en échec demande une confirmation explicite ; hors terminal, il
 arrête le déploiement.
+
+### Les droits sont imposés, pas copiés
+
+`--chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r` : **755 pour les dossiers, 644 pour les
+fichiers, quels que soient les droits locaux.**
+
+Ce n'est pas de la coquetterie. Sur macOS, DDEV synchronise par mutagen, qui
+écrit sur l'hôte en `600`/`700` tout ce que le conteneur a produit — donc les
+assets construits par Vite. Un transfert qui préserve les droits les livre
+illisibles pour le serveur web : **403 sur le CSS et le JS, page en 200,
+entièrement dépouillée.**
+
+rsync corrige aussi les droits des fichiers déjà présents dont le contenu n'a
+pas changé : un déploiement **répare** un serveur déjà dans cet état.
+
+### La vérification porte sur les assets, pas seulement sur la page
+
+L'étape 7 relève les URL du thème réellement référencées dans le HTML rendu — ni
+liste à maintenir, ni supposition sur le nom des fichiers hachés — et vérifie
+chacune. Une page en 200 dont le CSS répond 403 est indiscernable d'un
+déploiement réussi si on s'arrête au code de la page.
+
+En cas de 403 persistant, la sonde qui tranche est un **fichier inexistant** :
+404 signifie que le dossier est traversable et que le problème est le fichier ;
+403 signifie que le dossier lui-même n'a pas le bit d'exécution, et que rien de
+ce qu'il contient n'est accessible.
 
 ## Options
 

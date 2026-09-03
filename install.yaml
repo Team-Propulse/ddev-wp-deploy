@@ -5,6 +5,9 @@ ddev_version_constraint: '>= v1.24.0'
 
 # Copiés dans `.ddev/` du projet, et destinés à être VERSIONNÉS avec lui :
 # tout dev qui clone a `ddev deploy` sans rien installer.
+# Les deux portent `#ddev-generated`, donc `ddev add-on update` les rafraîchit.
+# Les réglages propres au projet vivent à côté, dans des fichiers que l'add-on
+# ne connaît pas : `deploy/targets.conf` et `deploy/exclude.local.txt`.
 project_files:
   - commands/host/deploy
   - deploy/exclude.txt
