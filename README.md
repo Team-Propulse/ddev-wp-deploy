@@ -120,10 +120,10 @@ site qui se vide.
 Un contrôle en échec demande une confirmation explicite ; hors terminal, il
 arrête le déploiement.
 
-### Les droits sont imposés, pas copiés
+### Les droits sont normalisés sur le serveur
 
-`--chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r` : **755 pour les dossiers, 644 pour les
-fichiers, quels que soient les droits locaux.**
+Après le transfert, une passe explicite : **755 pour les dossiers, 644 pour les
+fichiers**, sur le dossier du thème.
 
 Ce n'est pas de la coquetterie. Sur macOS, DDEV synchronise par mutagen, qui
 écrit sur l'hôte en `600`/`700` tout ce que le conteneur a produit — donc les
@@ -131,8 +131,14 @@ assets construits par Vite. Un transfert qui préserve les droits les livre
 illisibles pour le serveur web : **403 sur le CSS et le JS, page en 200,
 entièrement dépouillée.**
 
-rsync corrige aussi les droits des fichiers déjà présents dont le contenu n'a
-pas changé : un déploiement **répare** un serveur déjà dans cet état.
+> ⚠️ **Ne pas compter sur `--chmod`.** L'`openrsync` livré avec macOS accepte
+> l'option, l'annonce dans son usage, et **ne l'applique pas** — sans
+> avertissement. Un déploiement s'annonce alors réussi et le 403 reste. Elle est
+> conservée dans la commande parce qu'elle fonctionne avec le rsync GNU, mais
+> c'est la passe côté serveur qui garantit le résultat.
+
+Cette passe **répare** aussi un serveur déjà dans cet état, ce qu'un simple
+transfert ne fait pas.
 
 ### La vérification porte sur les assets, pas seulement sur la page
 

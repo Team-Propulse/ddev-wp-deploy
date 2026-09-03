@@ -188,6 +188,7 @@ HOTE="$(conf_lire "$ENV_CIBLE" host)"
 USER_SSH="$(conf_lire "$ENV_CIBLE" user)"
 PORT="$(conf_lire "$ENV_CIBLE" port)"
 CHEMIN="$(conf_lire "$ENV_CIBLE" path)"
+CHEMIN="${CHEMIN%/}"   # slash final éventuel : évite les `//` dans les chemins
 URL="$(conf_lire "$ENV_CIBLE" url)"
 BRANCHE="$(conf_lire "$ENV_CIBLE" branch)"
 
@@ -389,16 +390,21 @@ fi
 
 titre "6 · Transfert"
 
-# ⚠️ `--chmod` N'EST PAS UN LUXE. Sur macOS, DDEV synchronise par mutagen, qui
-# écrit sur l'hôte en 600/700 tout ce que le conteneur a produit : les assets
-# construits par Vite arrivent donc illisibles pour un serveur web. Transférés
-# tels quels, ils donnent un **403 sur le CSS et le JS** — page en 200,
+# ⚠️ LES DROITS SONT LE PIÈGE DE CE DÉPLOIEMENT. Sur macOS, DDEV synchronise par
+# mutagen, qui écrit sur l'hôte en 600/700 tout ce que le conteneur a produit :
+# les assets construits par Vite arrivent donc illisibles pour un serveur web.
+# Transférés tels quels, ils donnent un 403 sur le CSS et le JS — page en 200,
 # entièrement dépouillée. Constaté en préproduction le 03/09/2026.
 #
-# On impose donc les droits à la cible plutôt que de copier ceux de la source :
-# 755 pour les dossiers, 644 pour les fichiers. rsync corrige aussi les droits
-# des fichiers déjà présents dont le contenu n'a pas changé, donc un
-# déploiement RÉPARE un serveur déjà dans cet état.
+# ⚠️⚠️ `--chmod` NE SUFFIT PAS, et c'est un piège à lui tout seul :
+# l'openrsync livré avec macOS l'ACCEPTE, l'annonce dans son usage… et
+# l'IGNORE, sans le moindre avertissement. Vérifié : une source en 600/700
+# arrive en 600/700 à destination. Le déploiement semblait donc réussir et le
+# 403 restait.
+#
+# L'option est conservée parce qu'elle fonctionne avec le rsync GNU (un dev qui
+# l'a par Homebrew économise la passe suivante), mais c'est la passe de droits
+# SUR LE SERVEUR, plus bas, qui garantit le résultat.
 args_rsync=(-a -z --delete --itemize-changes --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r)
 [ "$DRY" = 1 ] && args_rsync+=(-n)
 [ -f "$EXCLUDES" ] && args_rsync+=(--exclude-from="$EXCLUDES")
@@ -411,6 +417,24 @@ if ! rsync "${args_rsync[@]}" \
 	-e "ssh -o BatchMode=yes -p $PORT" \
 	"$THEME_LOCAL/" "$USER_SSH@$HOTE:$THEME_DISTANT/" | tee "$sortie_rsync"; then
 	mourir "Le transfert a échoué."
+fi
+
+# ── Droits, sur le serveur ───────────────────────────────────────────────────
+#
+# Une passe explicite après le transfert, plutôt qu'une option de rsync : c'est
+# la seule façon d'être indépendant de la variante de rsync installée, ET de
+# réparer les fichiers déjà présents avec de mauvais droits.
+#
+# 755/644 en clair plutôt qu'un `a+rX` qui n'ajoute que : un fichier
+# world-writable sur un hébergement mutualisé est un vrai problème, et un
+# déploiement est le bon moment pour affirmer l'état attendu.
+if [ "$DRY" = 0 ]; then
+	if ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
+		"find '$THEME_DISTANT' -type d -exec chmod 755 {} + && find '$THEME_DISTANT' -type f -exec chmod 644 {} +" 2>/dev/null; then
+		ok "Droits normalisés sur le serveur (755 dossiers, 644 fichiers)"
+	else
+		alerte "La passe de droits a échoué — un 403 sur les assets est alors probable."
+	fi
 fi
 
 nb_envoyes="$(grep -c '^[<>]' "$sortie_rsync" || true)"
