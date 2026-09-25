@@ -3,7 +3,7 @@
 ## #ddev-generated: retire cette ligne si tu veux éditer et posséder ce fichier
 ## (mais alors `ddev add-on update` ne le mettra plus à jour).
 ## Description: Déploie le thème WordPress vers un environnement distant
-## Usage: deploy <environnement> [--dry-run] [--no-build] [--yes]
+## Usage: deploy <environnement> [--dry-run] [--no-build] [--no-purge] [--yes]
 ## Example: "ddev deploy preprod" | "ddev deploy prod --dry-run"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -52,12 +52,14 @@ mourir(){ printf '\n  %s✗ %s%s\n\n' "$ROUGE" "$1" "$RAZ" >&2; exit 1; }
 ENV_CIBLE=''
 DRY=0
 BUILD=1
+PURGE=1
 OUI=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--dry-run|-n) DRY=1 ;;
 		--no-build)   BUILD=0 ;;
+		--no-purge)   PURGE=0 ;;
 		--yes|-y)     OUI=1 ;;
 		-h|--help)
 			sed -n '/^## Usage/,/^## Example/p' "$0" | sed 's/^## //'
@@ -440,6 +442,53 @@ if [ "$DRY" = 0 ]; then
 	fi
 fi
 
+# ── Cache de pages, sur le serveur ────────────────────────────────────────────
+#
+# ⚠️ UN CACHE DE PAGES SURVIT AU DÉPLOIEMENT, et c'est une panne, pas un détail.
+# Les assets construits portent un nom haché (`main-C_b-2cCh.js`) qui change à
+# chaque build, et le `--delete` ci-dessus supprime les anciens. Or une page
+# mise en cache AVANT le déploiement garde l'ancienne URL : son JS répond 404.
+# Aucune extension de cache ne le voit — WP Fastest Cache ne se vide que sur
+# des événements WordPress (publication, changement de thème, mise à jour par
+# le gestionnaire), jamais sur un rsync. Constaté sur Aegerter le 25/09/2026 :
+# le popup d'âge du site ne se ferme QUE par le JS, un visiteur y restait donc
+# bloqué. Voir le README, § Le cache de pages est vidé.
+#
+# On supprime donc les dossiers de cache, comme l'extension le fait elle-même
+# quand on clique « Vider le cache ». Ils sont recréés à la visite suivante.
+#
+# ⚠️ Liste FERMÉE, et limitée à ce qui a été vérifié. Chaque extension a ses
+# propres dossiers ; en ajouter une, c'est d'abord lire son code de purge.
+#   WP Fastest Cache — cache/all (pages), cache/wpfc-minified (CSS/JS
+#   recopiés), cache/wpfc-mobile-cache (pages mobiles, si activé)
+CACHES_PAGES=(
+	"wp-content/cache/all"
+	"wp-content/cache/wpfc-minified"
+	"wp-content/cache/wpfc-mobile-cache"
+)
+
+if [ "$PURGE" = 1 ]; then
+	# Le chemin distant est ENTRE QUOTES et préfixé par la racine WordPress, déjà
+	# vérifiée à l'étape 4 (présence de wp-content/). Jamais de joker : seuls
+	# les dossiers de la liste peuvent être touchés.
+	caches_presents="$(ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
+		"cd '$CHEMIN' && for d in ${CACHES_PAGES[*]}; do [ -d \"\$d\" ] && echo \"\$d\"; done; true" 2>/dev/null || true)"
+
+	if [ -z "$caches_presents" ]; then
+		faible "Aucun cache de pages connu sur le serveur — rien à vider."
+	elif [ "$DRY" = 1 ]; then
+		alerte "Caches de pages qui seraient vidés : $(echo $caches_presents)"
+	elif ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
+		"cd '$CHEMIN' && rm -rf $(printf "'%s' " $caches_presents)" 2>/dev/null; then
+		ok "Cache de pages vidé ($(echo $caches_presents | sed 's#wp-content/cache/##g'))"
+	else
+		alerte "Le cache de pages n'a pas pu être vidé : À VIDER À LA MAIN depuis l'admin,"
+		alerte "sans quoi les pages en cache chargent des assets supprimés."
+	fi
+else
+	faible "Cache de pages laissé en place (--no-purge)."
+fi
+
 nb_envoyes="$(grep -c '^[<>]' "$sortie_rsync" || true)"
 nb_supprimes="$(grep -c '^\*deleting' "$sortie_rsync" || true)"
 
@@ -500,14 +549,21 @@ fi
 
 # Diagnostic ACF à distance, si le thème l'embarque et si wp-cli est là.
 # Best effort : beaucoup d'hébergements mutualisés n'ont pas wp.
+#
+# ⚠️ LE BINAIRE N'A PAS TOUJOURS LE MÊME NOM. Infomaniak l'installe en
+# `wp-cli`, pas en `wp` : un test sur `wp` seul concluait « absent » sur un
+# serveur qui l'avait (constaté le 25/09/2026). On essaie les deux.
 if [ -f "$THEME_LOCAL/tools/diag-acf.php" ]; then
-	if ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" "command -v wp >/dev/null 2>&1"; then
-		info "diag-acf.php à distance :"
+	WPCLI="$(ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
+		"for b in wp wp-cli; do command -v \"\$b\" >/dev/null 2>&1 && { echo \"\$b\"; break; }; done; true" 2>/dev/null || true)"
+
+	if [ -n "$WPCLI" ]; then
+		info "diag-acf.php à distance ($WPCLI) :"
 		ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
-			"cd '$CHEMIN' && wp eval-file 'wp-content/themes/$THEME/tools/diag-acf.php' 2>&1 | tail -4" \
+			"cd '$CHEMIN' && $WPCLI eval-file 'wp-content/themes/$THEME/tools/diag-acf.php' 2>&1 | tail -4" \
 			| sed 's/^/      /' || alerte "Le diagnostic n'a pas pu tourner."
 	else
-		faible "wp-cli absent du serveur — diagnostic à lancer depuis le back-office."
+		faible "wp-cli absent du serveur (ni « wp » ni « wp-cli ») — diagnostic à lancer depuis le back-office."
 	fi
 fi
 

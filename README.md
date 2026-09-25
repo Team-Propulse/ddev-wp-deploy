@@ -173,8 +173,8 @@ liste commune de se propager sans écraser les réglages d'un projet.
 | **3 · Contrôle** | Manifeste des assets, `acf-json/`, `dist/images` — voir plus bas |
 | **4 · SSH** | Connexion testée, et présence de `wp-content/` à la racine indiquée |
 | **5 · Confirmation** | En prod, il faut taper `prod` |
-| **6 · Transfert** | `rsync -az --delete`, puis normalisation des droits sur le serveur |
-| **7 · Vérification** | HTTP sur l'URL publique **et sur chaque asset du thème**, puis `tools/diag-acf.php` à distance si `wp` est là |
+| **6 · Transfert** | `rsync -az --delete`, normalisation des droits sur le serveur, puis **vidage du cache de pages** |
+| **7 · Vérification** | HTTP sur l'URL publique **et sur chaque asset du thème**, puis `tools/diag-acf.php` à distance si wp-cli est là — sous le nom `wp` **ou** `wp-cli` (celui d'Infomaniak) |
 
 ### Les trois contrôles de l'étape 3
 
@@ -216,6 +216,38 @@ entièrement dépouillée.**
 Cette passe **répare** aussi un serveur déjà dans cet état, ce qu'un simple
 transfert ne fait pas. Elle est sautée en `--dry-run`.
 
+### Le cache de pages est vidé
+
+Depuis la v1.2.0. **Un cache de pages survit à un déploiement, et c'est une
+panne.** Les assets construits portent un nom haché qui change à chaque build
+(`main-C_b-2cCh.js`), et `--delete` supprime les anciens. Une page mise en
+cache avant le déploiement garde l'ancienne URL : **son JavaScript répond 404**,
+et son CSS — si l'extension l'a recopié — est servi périmé.
+
+Aucune extension ne le voit toute seule : WP Fastest Cache, par exemple, ne se
+vide que sur des événements WordPress (publication, changement de thème, mise à
+jour par le gestionnaire), **jamais sur un rsync**. Rencontré sur un site dont
+le popup de vérification d'âge ne se ferme que par le JS : un nouveau visiteur
+y serait resté bloqué.
+
+Après le transfert, la commande **supprime donc les dossiers de cache connus**
+sur le serveur — exactement ce que fait l'extension quand on clique « Vider le
+cache ». Ils sont recréés à la visite suivante.
+
+| Extension | Dossiers vidés, sous `wp-content/cache/` |
+|---|---|
+| WP Fastest Cache | `all` (pages), `wpfc-minified` (CSS/JS recopiés), `wpfc-mobile-cache` (si activé) |
+
+- **La liste est fermée**, et limitée à ce qui a été vérifié. Pour une autre
+  extension, lire d'abord son code de purge, puis ajouter ses dossiers à
+  `CACHES_PAGES` dans `commands/host/deploy`.
+- En `--dry-run`, la commande **dit** ce qu'elle viderait, sans y toucher.
+- `--no-purge` saute l'étape.
+- Sans cache sur le serveur, l'étape ne fait rien et le dit.
+- Si la suppression échoue, le déploiement continue, mais **l'alerte demande de
+  vider le cache à la main** : c'est la seule panne de ce déploiement qui ne se
+  voit pas sur la page de vérification — celle-ci est justement régénérée.
+
 ### La vérification porte sur les assets, pas seulement sur la page
 
 L'étape 7 relève les URL du thème réellement référencées dans le HTML rendu — ni
@@ -229,6 +261,7 @@ déploiement réussi si on s'arrête au code de la page.
 |---|---|
 | `--dry-run`, `-n` | Montre ce qui partirait, ne transfère rien et ne touche pas aux droits |
 | `--no-build` | Déploie `dist/` tel qu'il est sur le disque |
+| `--no-purge` | Ne vide pas le cache de pages du serveur (voir plus haut) |
 | `--yes`, `-y` | Pas de question. Un contrôle en échec **arrête** le déploiement au lieu de demander |
 
 ## Prérequis
