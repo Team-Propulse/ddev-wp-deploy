@@ -557,10 +557,15 @@ if [ -f "$THEME_LOCAL/tools/diag-acf.php" ]; then
 	WPCLI="$(ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
 		"for b in wp wp-cli; do command -v \"\$b\" >/dev/null 2>&1 && { echo \"\$b\"; break; }; done; true" 2>/dev/null || true)"
 
+	# ⚠️ LE SCRIPT EST ENVOYÉ PAR L'ENTRÉE STANDARD (`eval-file -`), il n'est pas
+	# lu sur le serveur : `tools/` est souvent exclu du déploiement, et le
+	# fichier n'y existe donc pas (« does not exist », constaté le 25/09/2026).
+	# La copie LOCALE fait foi. Le script ne doit donc rien inclure par chemin
+	# relatif — c'est le cas de diag-acf.php.
 	if [ -n "$WPCLI" ]; then
 		info "diag-acf.php à distance ($WPCLI) :"
 		ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
-			"cd '$CHEMIN' && $WPCLI eval-file 'wp-content/themes/$THEME/tools/diag-acf.php' 2>&1 | tail -4" \
+			"cd '$CHEMIN' && $WPCLI eval-file - 2>&1 | tail -4" < "$THEME_LOCAL/tools/diag-acf.php" \
 			| sed 's/^/      /' || alerte "Le diagnostic n'a pas pu tourner."
 	else
 		faible "wp-cli absent du serveur (ni « wp » ni « wp-cli ») — diagnostic à lancer depuis le back-office."
