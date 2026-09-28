@@ -13,9 +13,8 @@
 # `src/` hérité d'un ancien téléversement FTP y survivra sans être mis à jour.
 # Pour le nettoyer, c'est une suppression manuelle, une fois.
 #
-# Règle de tri : tout ce qui est ENTRÉE du build reste ici. Tout ce qui aide à
-# diagnostiquer en ligne (docs/, tools/) part — ça ne pèse rien et ça vaut cher
-# le jour où il faut comprendre quelque chose sur le serveur.
+# Règle de tri : tout ce qui est ENTRÉE du build reste ici, et la
+# documentation aussi. Les outils de diagnostic en ligne (tools/) partent.
 
 # ── Contrôle de version ─────────────────────────────────────────────────────
 .git
@@ -41,3 +40,13 @@ postcss.config.js
 Thumbs.db
 *.log
 .rendu-*.png
+
+# ── Documentation ───────────────────────────────────────────────────────────
+# Depuis la v1.2.2 (28/09/2026), elle ne part plus. Apache la sert en clair :
+# `…/themes/<thème>/docs/TODO.md` répond 200, lisible par n'importe qui, et une
+# doc de thème décrit l'hébergement, ses chemins, parfois une faille non
+# corrigée (Aegerter, 21/09/2026). Elle n'a aucun usage en ligne : on la lit
+# dans le dépôt.
+# ⚠️ rsync ne supprime pas un docs/ déjà déployé : le retirer à la main, une
+# fois, sur chaque serveur.
+docs
