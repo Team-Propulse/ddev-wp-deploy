@@ -174,7 +174,7 @@ liste commune de se propager sans écraser les réglages d'un projet.
 | **4 · SSH** | Connexion testée, et présence de `wp-content/` à la racine indiquée |
 | **5 · Confirmation** | En prod, il faut taper `prod` |
 | **6 · Transfert** | `rsync -az --delete`, normalisation des droits sur le serveur, puis **vidage du cache de pages** |
-| **7 · Vérification** | HTTP sur l'URL publique **et sur chaque asset du thème**, puis `tools/diag-acf.php` à distance si wp-cli est là — sous le nom `wp` **ou** `wp-cli` (celui d'Infomaniak) |
+| **7 · Vérification** | HTTP sur l'URL publique **et sur chaque asset du thème**, puis `tools/diag-acf.php` à distance si wp-cli est là — sous le nom `wp` **ou** `wp-cli` (celui d'Infomaniak), WP Fastest Cache écarté (voir plus bas) |
 
 ### Les trois contrôles de l'étape 3
 
@@ -243,6 +243,14 @@ cache ». Ils sont recréés à la visite suivante.
   `CACHES_PAGES` dans `commands/host/deploy`.
 - En `--dry-run`, la commande **dit** ce qu'elle viderait, sans y toucher.
 - `--no-purge` saute l'étape.
+
+> ⚠️ **WP Fastest Cache court-circuite aussi wp-cli** (constaté le 28/09/2026).
+> Il sert son cache par PHP dès son chargement, même en ligne de commande : une
+> commande `wp-cli` affiche alors la page d'accueil en cache — du HTML, avec en
+> pied « WP Fastest Cache file was created… » — et **ne s'exécute pas**. Le
+> diagnostic ACF l'écarte (`--skip-plugins=wp-fastest-cache`, depuis la v1.2.3).
+> À la main : même option, ou `skip-plugins: wp-fastest-cache` dans le
+> `wp-cli.yml` du serveur.
 - Sans cache sur le serveur, l'étape ne fait rien et le dit.
 - Si la suppression échoue, le déploiement continue, mais **l'alerte demande de
   vider le cache à la main** : c'est la seule panne de ce déploiement qui ne se

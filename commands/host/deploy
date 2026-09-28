@@ -562,10 +562,15 @@ if [ -f "$THEME_LOCAL/tools/diag-acf.php" ]; then
 	# fichier n'y existe donc pas (« does not exist », constaté le 25/09/2026).
 	# La copie LOCALE fait foi. Le script ne doit donc rien inclure par chemin
 	# relatif — c'est le cas de diag-acf.php.
+	#
+	# ⚠️ --skip-plugins=wp-fastest-cache : l'extension sert son cache par PHP dès
+	# son chargement, MÊME EN LIGNE DE COMMANDE. wp-cli y affiche alors la page
+	# d'accueil en cache et s'arrête sans rien exécuter (constaté le 28/09/2026
+	# sur eclore-vous.fr). Écarter une extension absente ne coûte rien.
 	if [ -n "$WPCLI" ]; then
 		info "diag-acf.php à distance ($WPCLI) :"
 		ssh -o BatchMode=yes -p "$PORT" "$USER_SSH@$HOTE" \
-			"cd '$CHEMIN' && $WPCLI eval-file - 2>&1 | tail -4" < "$THEME_LOCAL/tools/diag-acf.php" \
+			"cd '$CHEMIN' && $WPCLI --skip-plugins=wp-fastest-cache eval-file - 2>&1 | tail -4" < "$THEME_LOCAL/tools/diag-acf.php" \
 			| sed 's/^/      /' || alerte "Le diagnostic n'a pas pu tourner."
 	else
 		faible "wp-cli absent du serveur (ni « wp » ni « wp-cli ») — diagnostic à lancer depuis le back-office."
