@@ -35,6 +35,14 @@ tailwind.config.js
 postcss.config.js
 .npmrc
 
+# ── Témoins du serveur de dev ───────────────────────────────────────────────
+# Écrit à la racine du thème par Vite tant que le serveur de dev tourne (l'URL
+# locale, ex. https://projet.ddev.site:5173). Un thème lit ce fichier pour
+# charger ses assets depuis Vite : sur un serveur, il n'a rien à faire, et un
+# thème qui ne le garderait pas derrière WP_ENV=dev s'afficherait sans style
+# (Guiton, 22/10/2026). Depuis la v1.2.4.
+.vite-hot
+
 # ── Débris ──────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

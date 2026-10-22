@@ -152,9 +152,12 @@ Deux listes d'exclusions, et la séparation est volontaire :
 
 La liste commune écarte les **entrées du build** (`src/`, `node_modules/`,
 `package.json`, la config Vite/Tailwind/PostCSS), le contrôle de version et les
-débris, et **la documentation (`docs/`)** depuis la v1.2.2 : Apache la sert en
+débris, **la documentation (`docs/`)** depuis la v1.2.2 : Apache la sert en
 clair, et une doc de thème décrit l'hébergement, parfois une faille non corrigée.
-On la lit dans le dépôt. Les outils de diagnostic en ligne (`tools/`) partent.
+On la lit dans le dépôt. Depuis la v1.2.4, le témoin `.vite-hot` du serveur de
+dev Vite ne part plus non plus : il existe tant que `ddev npm run dev` tourne,
+et un déploiement lancé à ce moment l'envoyait. Les outils de diagnostic en
+ligne (`tools/`) partent.
 
 Pour une exclusion propre à un projet, créer `exclude.local.txt` : la commande
 passe **les deux** listes à rsync. C'est ce qui permet aux corrections de la
